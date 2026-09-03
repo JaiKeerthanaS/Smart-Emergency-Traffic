@@ -23,19 +23,37 @@ st.set_page_config(page_title="Smart Emergency Vehicle Priority System", layout=
 def init_session():
     if "video_processors" not in st.session_state:
         st.session_state.video_processors = {}
+
     if "detector" not in st.session_state:
         st.session_state.detector = Detector(MODEL_PATH, confidence=0.5)
+
     if "signal_controller" not in st.session_state:
-        st.session_state.signal_controller = SignalController(green=GREEN_TIME, yellow=YELLOW_TIME,
-                                                            confirm_frames=DETECTION_CONFIRM, clear_frames=DETECTION_CLEAR)
+        st.session_state.signal_controller = SignalController(
+            green=GREEN_TIME,
+            yellow=YELLOW_TIME,
+            confirm_frames=DETECTION_CONFIRM,
+            clear_frames=DETECTION_CLEAR
+        )
+
     if "events" not in st.session_state:
         st.session_state.events = []
+
     if "frame_counts" not in st.session_state:
         st.session_state.frame_counts = [0, 0, 0, 0]
+
+    # Store the most recent YOLO detection for each road
+    if "last_detections" not in st.session_state:
+        st.session_state.last_detections = [None, None, None, None]
+
     if "prototype_mode" not in st.session_state:
         st.session_state.prototype_mode = "DEMO"
+
     if "demo_selection" not in st.session_state:
-        st.session_state.demo_selection = {"road": None, "vehicle": None, "active": False}
+        st.session_state.demo_selection = {
+            "road": None,
+            "vehicle": None,
+            "active": False
+        }
 
 
 def add_event(msg: str):
@@ -163,26 +181,59 @@ def main():
                     image_ph.text("Camera feed unavailable or unreadable.")
                     continue
 
-                # increment frame counter and decide whether to run inference
+                # increment frame counter and run YOLO periodically
                 st.session_state.frame_counts[idx] += 1
-                # Ensure detection runs on the exact frame being displayed to keep results synchronized.
-                # For strict synchronization we run inference on every displayed frame.
-                run_infer = True
+
+                run_infer = (
+                    st.session_state.frame_counts[idx] % INFERENCE_INTERVAL == 0
+                )
 
                 detection = None
                 if run_infer and st.session_state.prototype_mode == "AI" and st.session_state.detector.model_loaded:
                     try:
                         results = st.session_state.detector.detect_on_frame(frame)
-                        emergency = [r for r in results if r["label_norm"] in ("ambulance","fire truck","police") and r["conf"]>=st.session_state.detector.confidence]
+
+                        emergency = [
+                            r for r in results
+                            if r["label_norm"] in ("ambulance", "fire truck", "police")
+                            and r["conf"] >= st.session_state.detector.confidence
+                        ]
+
                         if emergency:
                             best = max(emergency, key=lambda x: x["conf"])
-                            detection = {"detected": True, "vehicle_type": best["label_norm"], "confidence": best["conf"], "boxes": [{"box": best["box"], "label": best["label"], "conf": best["conf"]}]}
-                            st.session_state.signal_controller.process_detection(idx+1, detection)
-                            add_event(f"AI detected {best['label_norm'].upper()} on Road {idx+1} ({best['conf']*100:.0f}%)")
+
+                            detection = {
+                                "detected": True,
+                                "vehicle_type": best["label_norm"],
+                                "confidence": best["conf"],
+                                "boxes": [{
+                                    "box": best["box"],
+                                    "label": best["label"],
+                                    "conf": best["conf"]
+                                }]
+                            }
+
+                            # Save latest detection for this road
+                            st.session_state.last_detections[idx] = detection
+
+                            # Update traffic signal
+                            st.session_state.signal_controller.process_detection(
+                                idx + 1,
+                                detection
+                            )
+
+                            add_event(
+                                f"AI detected {best['label_norm'].upper()} "
+                                f"on Road {idx+1} ({best['conf']*100:.0f}%)"
+                            )
+
                         else:
-                            st.session_state.signal_controller.process_no_detection(idx+1)
+                            st.session_state.last_detections[idx] = None
+                            st.session_state.signal_controller.process_no_detection(idx + 1)
+
                     except Exception as e:
                         detect_ph.error(f"Detection error: {e}")
+                
 
                 # DEMO handling
                 if st.session_state.prototype_mode == "DEMO" and st.session_state.demo_selection.get("active"):
